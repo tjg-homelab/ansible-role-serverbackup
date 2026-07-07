@@ -2,11 +2,11 @@
 # ── Packages ────────────────────────────────────────────────────────────────
 serverbackup_manage_packages: true
 serverbackup_package_state: present
+# rsync ships /usr/bin/rrsync on Debian 12+/Ubuntu 24.04 — no separate package
 serverbackup_packages:
   - bash
   - gzip
   - openssh-client
-  - rrsync
   - rsync
   - tar
 

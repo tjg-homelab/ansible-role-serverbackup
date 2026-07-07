@@ -22,7 +22,7 @@ What it manages:
 
 ## Requirements
 
-- Debian 12/13 or Ubuntu 24.04 (`rrsync` ships as a package)
+- Debian 12/13 or Ubuntu 24.04 (their `rsync` package ships `/usr/bin/rrsync`)
 - The `ansible.posix` collection (for `authorized_key`)
 - MySQL backups additionally need a local MySQL/MariaDB server and client
   tools (`mysql`, `mysqldump`)
