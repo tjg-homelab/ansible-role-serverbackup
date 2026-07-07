@@ -1,0 +1,97 @@
+---
+# ── Packages ────────────────────────────────────────────────────────────────
+serverbackup_manage_packages: true
+serverbackup_package_state: present
+serverbackup_packages:
+  - bash
+  - gzip
+  - openssh-client
+  - rrsync
+  - rsync
+  - tar
+
+# ── Layout ──────────────────────────────────────────────────────────────────
+serverbackup_base_dir: /var/backups/server-backup
+serverbackup_config_dir: /etc/server-backup
+serverbackup_script_dir: /usr/local/libexec/server-backup
+serverbackup_log_dir: "{{ serverbackup_base_dir }}/logs"
+
+# ── Website backups ─────────────────────────────────────────────────────────
+serverbackup_website_backups_enabled: true
+serverbackup_website_source_root: /var/www/html
+serverbackup_website_output_dir: "{{ serverbackup_base_dir }}/websites"
+
+# ── MySQL backups (opt-in — enable on hosts that run MySQL/MariaDB) ────────
+serverbackup_mysql_backups_enabled: false
+serverbackup_mysql_output_dir: "{{ serverbackup_base_dir }}/mysql"
+serverbackup_mysql_defaults_file_path: /root/.my.cnf
+serverbackup_mysql_manage_defaults_file: true
+serverbackup_mysql_user: root
+serverbackup_mysql_password: ""
+serverbackup_mysql_host: ""
+serverbackup_mysql_socket: ""
+serverbackup_mysql_port: ""
+serverbackup_mysql_excluded_databases:
+  - information_schema
+  - mysql
+  - performance_schema
+  - sys
+serverbackup_mysql_dump_options:
+  - --single-transaction
+  - --quick
+  - --routines
+  - --triggers
+  - --events
+  - --databases
+
+# ── Retention ───────────────────────────────────────────────────────────────
+serverbackup_retention_count: 3
+serverbackup_cleanup_enabled: true
+
+# ── Pull access (primary transfer model) ────────────────────────────────────
+# The backup destination (e.g. a NAS) fetches archives by rsyncing over SSH
+# as a dedicated local user whose key is locked to a read-only rrsync of
+# serverbackup_base_dir. Nothing on this host can write to the destination.
+serverbackup_pull_enabled: true
+serverbackup_pull_user: backup-pull
+serverbackup_pull_public_keys: []
+serverbackup_pull_authorized_keys_exclusive: true
+serverbackup_pull_rrsync_path: /usr/bin/rrsync
+
+# ── Push transfer (optional, legacy) ────────────────────────────────────────
+# Pushes archives to a remote over SSH after each backup run. Disabled by
+# default — prefer pull, which keeps destination credentials off this host.
+serverbackup_push_enabled: false
+serverbackup_push_method: rsync
+serverbackup_push_rsync_options:
+  - -az
+serverbackup_push_rsync_chmod: "D750,F640"
+serverbackup_host_identifier: "{{ ansible_facts['fqdn'] | default(inventory_hostname) }}"
+serverbackup_push_destination_user: backup
+serverbackup_push_destination_host: ""
+serverbackup_push_destination_port: 22
+serverbackup_push_destination_base_path: ""
+serverbackup_push_destination_website_subdir: websites
+serverbackup_push_destination_mysql_subdir: mysql
+serverbackup_push_use_proxy_jump: false
+serverbackup_push_proxy_jump_user: ""
+serverbackup_push_proxy_jump_host: ""
+serverbackup_push_proxy_jump_port: 22
+serverbackup_push_ssh_strict_host_key_checking: accept-new
+serverbackup_push_ssh_dir: /root/.ssh
+serverbackup_push_ssh_private_key_path: "{{ serverbackup_push_ssh_dir }}/id_server_backup"
+serverbackup_push_ssh_private_key: ""
+serverbackup_push_ssh_public_key_path: "{{ serverbackup_push_ssh_private_key_path }}.pub"
+serverbackup_push_ssh_public_key: ""
+serverbackup_push_ssh_config_path: "{{ serverbackup_config_dir }}/ssh/config"
+serverbackup_push_host_alias: server-backup-destination
+serverbackup_push_proxy_alias: server-backup-proxy
+
+# ── Systemd scheduling ──────────────────────────────────────────────────────
+serverbackup_systemd_unit_dir: /etc/systemd/system
+serverbackup_website_service_name: server-backup-websites
+serverbackup_website_timer_on_calendar: weekly
+serverbackup_website_timer_randomized_delay_sec: 1h
+serverbackup_mysql_service_name: server-backup-mysql
+serverbackup_mysql_timer_on_calendar: daily
+serverbackup_mysql_timer_randomized_delay_sec: 30m

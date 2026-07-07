@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly website backup schedule
+
+[Timer]
+OnCalendar={{ serverbackup_website_timer_on_calendar }}
+Persistent=true
+RandomizedDelaySec={{ serverbackup_website_timer_randomized_delay_sec }}
+Unit={{ serverbackup_website_service_name }}.service
+
+[Install]
+WantedBy=timers.target

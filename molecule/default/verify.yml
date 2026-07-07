@@ -1,0 +1,178 @@
+---
+# Note: verify cannot reference role defaults — values are hardcoded to match
+# converge.yml and the role's rendered paths.
+- name: Verify
+  hosts: all
+  become: true
+  tasks:
+    - name: Stat expected backup paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/backups/server-backup
+        - /var/backups/server-backup/websites
+        - /var/backups/server-backup/mysql
+        - /var/backups/server-backup/logs
+        - /etc/server-backup
+        - /usr/local/libexec/server-backup/server-backup-websites.sh
+        - /usr/local/libexec/server-backup/server-backup-mysql.sh
+        - /usr/local/libexec/server-backup/server-backup-transfer.sh
+        - /usr/local/libexec/server-backup/server-backup-retention.sh
+        - /etc/systemd/system/server-backup-websites.service
+        - /etc/systemd/system/server-backup-websites.timer
+        - /etc/systemd/system/server-backup-mysql.service
+        - /etc/systemd/system/server-backup-mysql.timer
+      register: serverbackup_verify_stats
+
+    - name: Assert expected backup paths exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+      loop: "{{ serverbackup_verify_stats.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Stat backup tree directories for pull permissions
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/backups/server-backup
+        - /var/backups/server-backup/websites
+      register: serverbackup_verify_dir_stats
+
+    - name: Assert backup tree is setgid and group-owned by the pull user
+      ansible.builtin.assert:
+        that:
+          - item.stat.gr_name == 'backup-pull'
+          - item.stat.mode == '2750'
+      loop: "{{ serverbackup_verify_dir_stats.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Assert backup timers are enabled
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/timers.target.wants/{{ item }}.timer"
+      loop:
+        - server-backup-websites
+        - server-backup-mysql
+      register: serverbackup_verify_timers
+      failed_when: not serverbackup_verify_timers.stat.islnk | default(false)
+
+    - name: Read pull user authorized_keys
+      ansible.builtin.slurp:
+        src: /home/backup-pull/.ssh/authorized_keys
+      register: serverbackup_verify_authkeys
+
+    - name: Assert pull key is locked to read-only rrsync
+      ansible.builtin.assert:
+        that:
+          - "'command=\"/usr/bin/rrsync -ro /var/backups/server-backup\"' in authkeys"
+          - "'restrict' in authkeys"
+          - "'molecule-nas-pull' in authkeys"
+      vars:
+        authkeys: "{{ serverbackup_verify_authkeys.content | b64decode }}"
+
+    - name: Syntax-check helper scripts
+      ansible.builtin.command: "bash -n /usr/local/libexec/server-backup/{{ item }}"
+      loop:
+        - server-backup-websites.sh
+        - server-backup-mysql.sh
+        - server-backup-transfer.sh
+        - server-backup-retention.sh
+      changed_when: false
+
+    - name: Run the website backup script
+      ansible.builtin.command: /usr/local/libexec/server-backup/server-backup-websites.sh
+      changed_when: true
+
+    - name: Find produced website archives
+      ansible.builtin.find:
+        paths: /var/backups/server-backup/websites
+        patterns: "*.tar.gz"
+      register: serverbackup_verify_archives
+
+    - name: Assert archives were produced group-readable for the pull user
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_archives.files | length == 2
+          - item.mode == '0640'
+      loop: "{{ serverbackup_verify_archives.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Pull archives over loopback SSH as the pretend NAS
+      ansible.builtin.command:
+        argv:
+          - rsync
+          - -a
+          - -e
+          - >-
+            ssh -i /root/nas-pull-key -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile=/root/nas-known-hosts
+          - backup-pull@127.0.0.1:websites/
+          - /tmp/pulled-websites/
+      changed_when: true
+
+    - name: Find pulled archives
+      ansible.builtin.find:
+        paths: /tmp/pulled-websites
+        patterns: "*.tar.gz"
+      register: serverbackup_verify_pulled
+
+    - name: Assert the pull retrieved the archives
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_pulled.files | length == 2
+
+    - name: Attempt to push a file through the pull account (must fail)
+      ansible.builtin.command:
+        argv:
+          - rsync
+          - -a
+          - -e
+          - >-
+            ssh -i /root/nas-pull-key -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile=/root/nas-known-hosts
+          - /etc/hostname
+          - backup-pull@127.0.0.1:websites/intruder
+      register: serverbackup_verify_push_attempt
+      changed_when: false
+      failed_when: serverbackup_verify_push_attempt.rc == 0
+
+    - name: Seed extra dated archives for the retention check
+      ansible.builtin.copy:
+        content: "expired fixture\n"
+        dest: "/var/backups/server-backup/websites/site-one_{{ item }}.tar.gz"
+        owner: root
+        group: backup-pull
+        mode: "0640"
+      loop:
+        - "2001-01-01"
+        - "2001-01-02"
+        - "2001-01-03"
+        - "2001-01-04"
+
+    - name: Run the retention script for site-one
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/server-backup/server-backup-retention.sh
+          - /var/backups/server-backup/websites
+          - site-one
+          - tar.gz
+          - "3"
+      changed_when: true
+
+    - name: Find site-one archives after retention
+      ansible.builtin.find:
+        paths: /var/backups/server-backup/websites
+        patterns: "site-one_*.tar.gz"
+      register: serverbackup_verify_retained
+
+    - name: Assert retention kept only the newest three site-one archives
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_retained.files | length == 3
+          - serverbackup_verify_retained.files
+            | map(attribute='path') | select('search', '2001-01-01') | length == 0
+          - serverbackup_verify_retained.files
+            | map(attribute='path') | select('search', '2001-01-02') | length == 0

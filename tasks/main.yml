@@ -1,0 +1,251 @@
+---
+- name: Validate supported OS family
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["os_family"] | lower == "debian"
+    fail_msg: This role supports Debian-family systems only (rrsync packaging).
+
+- name: Validate retention count
+  ansible.builtin.assert:
+    that:
+      - serverbackup_retention_count | int >= 1
+    fail_msg: serverbackup_retention_count must be at least 1
+
+- name: Validate pull access settings
+  ansible.builtin.assert:
+    that:
+      - serverbackup_pull_user | length > 0
+      - serverbackup_pull_public_keys | length > 0
+    fail_msg: >-
+      Pull access is enabled but no public keys are configured. Set
+      serverbackup_pull_public_keys to the destination's SSH public key(s),
+      or disable serverbackup_pull_enabled.
+  when: serverbackup_pull_enabled | bool
+
+- name: Validate MySQL defaults credentials when managed by this role
+  ansible.builtin.assert:
+    that:
+      - serverbackup_mysql_user | length > 0
+      - serverbackup_mysql_password | length > 0
+    fail_msg: >-
+      Set serverbackup_mysql_user and serverbackup_mysql_password, or disable
+      serverbackup_mysql_manage_defaults_file when providing credentials
+      another way.
+  when:
+    - serverbackup_mysql_backups_enabled | bool
+    - serverbackup_mysql_manage_defaults_file | bool
+
+- name: Validate push transfer settings
+  ansible.builtin.assert:
+    that:
+      - serverbackup_push_method in ["rsync", "scp"]
+      - serverbackup_push_destination_user | length > 0
+      - serverbackup_push_destination_host | length > 0
+      - serverbackup_push_destination_base_path | length > 0
+    fail_msg: Set push destination SSH details before enabling push transfer.
+  when: serverbackup_push_enabled | bool
+
+- name: Validate push ProxyJump settings
+  ansible.builtin.assert:
+    that:
+      - serverbackup_push_proxy_jump_user | length > 0
+      - serverbackup_push_proxy_jump_host | length > 0
+    fail_msg: Set ProxyJump SSH details before enabling ProxyJump transfers.
+  when:
+    - serverbackup_push_enabled | bool
+    - serverbackup_push_use_proxy_jump | bool
+
+- name: Install backup prerequisite packages
+  become: true
+  ansible.builtin.apt:
+    name: "{{ serverbackup_packages }}"
+    state: "{{ serverbackup_package_state }}"
+    update_cache: true
+    cache_valid_time: 3600
+  when:
+    - serverbackup_manage_packages | bool
+    - serverbackup_packages | length > 0
+
+- name: Create pull user
+  become: true
+  ansible.builtin.user:
+    name: "{{ serverbackup_pull_user }}"
+    system: true
+    shell: /bin/sh
+    create_home: true
+    password_lock: true
+  when: serverbackup_pull_enabled | bool
+
+- name: Authorize pull keys restricted to read-only rrsync
+  become: true
+  ansible.posix.authorized_key:
+    user: "{{ serverbackup_pull_user }}"
+    key: "{{ serverbackup_pull_public_keys | join('\n') }}"
+    key_options: >-
+      command="{{ serverbackup_pull_rrsync_path }} -ro
+      {{ serverbackup_base_dir }}",restrict
+    exclusive: "{{ serverbackup_pull_authorized_keys_exclusive }}"
+  when: serverbackup_pull_enabled | bool
+
+# With pull enabled, the backup tree is group-readable by the pull user;
+# setgid keeps archives written by root in that group. Without pull it
+# stays root-only.
+- name: Ensure backup directories exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ serverbackup_pull_user if serverbackup_pull_enabled | bool else 'root' }}"
+    mode: "{{ '2750' if serverbackup_pull_enabled | bool else '0700' }}"
+  loop:
+    - "{{ serverbackup_base_dir }}"
+    - "{{ serverbackup_website_output_dir }}"
+    - "{{ serverbackup_mysql_output_dir }}"
+    - "{{ serverbackup_log_dir }}"
+
+- name: Ensure config directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ serverbackup_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Ensure script directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ serverbackup_script_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy managed MySQL defaults file
+  become: true
+  ansible.builtin.template:
+    src: mysql-defaults.cnf.j2
+    dest: "{{ serverbackup_mysql_defaults_file_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - serverbackup_mysql_backups_enabled | bool
+    - serverbackup_mysql_manage_defaults_file | bool
+  no_log: true
+
+- name: Ensure SSH directories exist for push transfer
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ serverbackup_push_ssh_dir }}"
+    - "{{ serverbackup_push_ssh_config_path | dirname }}"
+  when: serverbackup_push_enabled | bool
+
+- name: Deploy push SSH private key
+  become: true
+  ansible.builtin.template:
+    src: ssh-private-key.j2
+    dest: "{{ serverbackup_push_ssh_private_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - serverbackup_push_enabled | bool
+    - serverbackup_push_ssh_private_key | length > 0
+  no_log: true
+
+- name: Deploy push SSH public key
+  become: true
+  ansible.builtin.template:
+    src: ssh-public-key.j2
+    dest: "{{ serverbackup_push_ssh_public_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - serverbackup_push_enabled | bool
+    - serverbackup_push_ssh_public_key | length > 0
+
+- name: Check for existing push SSH private key
+  become: true
+  ansible.builtin.stat:
+    path: "{{ serverbackup_push_ssh_private_key_path }}"
+  register: serverbackup_push_ssh_private_key_stat
+  when: serverbackup_push_enabled | bool
+
+- name: Ensure push SSH private key is available
+  ansible.builtin.assert:
+    that:
+      - serverbackup_push_ssh_private_key_stat.stat.exists
+    fail_msg: >-
+      Push transfer is enabled but no SSH private key is available at
+      {{ serverbackup_push_ssh_private_key_path }}. Provide
+      serverbackup_push_ssh_private_key or place a key at that path.
+  when: serverbackup_push_enabled | bool
+
+- name: Deploy push SSH client config
+  become: true
+  ansible.builtin.template:
+    src: ssh-config.j2
+    dest: "{{ serverbackup_push_ssh_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: serverbackup_push_enabled | bool
+
+- name: Deploy backup helper scripts
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ serverbackup_script_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - server-backup-retention.sh
+    - server-backup-transfer.sh
+    - server-backup-websites.sh
+    - server-backup-mysql.sh
+
+- name: Deploy server backup systemd units
+  become: true
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ serverbackup_systemd_unit_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - src: server-backup-websites.service.j2
+      dest: "{{ serverbackup_website_service_name }}.service"
+    - src: server-backup-websites.timer.j2
+      dest: "{{ serverbackup_website_service_name }}.timer"
+    - src: server-backup-mysql.service.j2
+      dest: "{{ serverbackup_mysql_service_name }}.service"
+    - src: server-backup-mysql.timer.j2
+      dest: "{{ serverbackup_mysql_service_name }}.timer"
+  notify: Reload systemd
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure backup timer states
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ item.name }}.timer"
+    enabled: "{{ item.enabled }}"
+    state: "{{ 'started' if item.enabled else 'stopped' }}"
+  loop:
+    - name: "{{ serverbackup_website_service_name }}"
+      enabled: "{{ serverbackup_website_backups_enabled | bool }}"
+    - name: "{{ serverbackup_mysql_service_name }}"
+      enabled: "{{ serverbackup_mysql_backups_enabled | bool }}"
+  loop_control:
+    label: "{{ item.name }}"

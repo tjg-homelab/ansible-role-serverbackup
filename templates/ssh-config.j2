@@ -1,0 +1,18 @@
+Host {{ serverbackup_push_proxy_alias }}
+  HostName {{ serverbackup_push_proxy_jump_host }}
+  User {{ serverbackup_push_proxy_jump_user }}
+  Port {{ serverbackup_push_proxy_jump_port }}
+  IdentitiesOnly yes
+  IdentityFile {{ serverbackup_push_ssh_private_key_path }}
+  StrictHostKeyChecking {{ serverbackup_push_ssh_strict_host_key_checking }}
+
+Host {{ serverbackup_push_host_alias }}
+  HostName {{ serverbackup_push_destination_host }}
+  User {{ serverbackup_push_destination_user }}
+  Port {{ serverbackup_push_destination_port }}
+  IdentitiesOnly yes
+  IdentityFile {{ serverbackup_push_ssh_private_key_path }}
+  StrictHostKeyChecking {{ serverbackup_push_ssh_strict_host_key_checking }}
+{% if serverbackup_push_use_proxy_jump | bool and (serverbackup_push_destination_host != serverbackup_push_proxy_jump_host or serverbackup_push_destination_user != serverbackup_push_proxy_jump_user or serverbackup_push_destination_port != serverbackup_push_proxy_jump_port) %}
+  ProxyJump {{ serverbackup_push_proxy_alias }}
+{% endif %}

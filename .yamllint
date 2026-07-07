@@ -1,0 +1,22 @@
+---
+# Kept in sync with ansible-lint's required yamllint settings:
+# https://docs.ansible.com/projects/lint/rules/yaml/
+extends: default
+
+rules:
+  line-length:
+    max: 120
+  braces:
+    max-spaces-inside: 1
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+
+ignore:
+  - .cache/

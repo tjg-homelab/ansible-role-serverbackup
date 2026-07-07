@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 027
+
+defaults_file="{{ serverbackup_mysql_defaults_file_path }}"
+output_dir="{{ serverbackup_mysql_output_dir }}"
+log_file="{{ serverbackup_log_dir }}/mysql-backup.log"
+retention_script="{{ serverbackup_script_dir }}/server-backup-retention.sh"
+transfer_script="{{ serverbackup_script_dir }}/server-backup-transfer.sh"
+backup_date="$(date '+%F')"
+retention_enabled="{{ serverbackup_cleanup_enabled | bool }}"
+transfer_enabled="{{ serverbackup_push_enabled | bool }}"
+retain_count="{{ serverbackup_retention_count }}"
+
+mysql_command=(mysql "--defaults-file=$defaults_file" --batch --skip-column-names)
+mysqldump_command=(mysqldump "--defaults-file=$defaults_file"{% for dump_option in serverbackup_mysql_dump_options %} "{{ dump_option }}"{% endfor %})
+excluded_databases=({% for database_name in serverbackup_mysql_excluded_databases %}"{{ database_name }}"{% if not loop.last %} {% endif %}{% endfor %})
+
+mkdir -p "$output_dir" "{{ serverbackup_log_dir }}"
+touch "$log_file"
+exec > >(tee -a "$log_file") 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
+if [[ ! -r "$defaults_file" ]]; then
+  log "MySQL defaults file is not readable: $defaults_file"
+  exit 1
+fi
+
+database_is_excluded() {
+  local database_name="$1"
+
+  for excluded_database in "${excluded_databases[@]}"; do
+    if [[ "$database_name" == "$excluded_database" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+mapfile -t databases < <("${mysql_command[@]}" -e 'SHOW DATABASES;')
+
+if (( {% raw %}${#databases[@]}{% endraw %} == 0 )); then
+  log "No databases returned by MySQL"
+  exit 0
+fi
+
+for database_name in "${databases[@]}"; do
+  if database_is_excluded "$database_name"; then
+    continue
+  fi
+
+  dump_path="${output_dir}/${database_name}_${backup_date}.sql.gz"
+  log "Dumping database $database_name"
+  "${mysqldump_command[@]}" "$database_name" | gzip -c > "$dump_path"
+
+  if [[ "$retention_enabled" == "True" ]]; then
+    "$retention_script" "$output_dir" "$database_name" "sql.gz" "$retain_count"
+  fi
+done
+
+if [[ "$transfer_enabled" == "True" ]]; then
+  "$transfer_script" mysql
+fi
+
+log "MySQL backup run complete"

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+backup_dir="${1:?backup directory is required}"
+backup_prefix="${2:?backup prefix is required}"
+backup_extension="${3:?backup extension is required}"
+retain_count="${4:?retain count is required}"
+
+mapfile -t matching_files < <(
+  find "$backup_dir" -maxdepth 1 -type f -name "${backup_prefix}_*.${backup_extension}" -printf '%f\n' \
+    | LC_ALL=C sort
+)
+
+if (( {% raw %}${#matching_files[@]}{% endraw %} <= retain_count )); then
+  exit 0
+fi
+
+delete_count=$(( {% raw %}${#matching_files[@]}{% endraw %} - retain_count ))
+
+for (( index=0; index<delete_count; index++ )); do
+  file_to_delete="${backup_dir}/${matching_files[$index]}"
+  printf '[%s] Removing expired backup %s\n' "$(date '+%F %T')" "$file_to_delete"
+  rm -f -- "$file_to_delete"
+done

@@ -1,0 +1,12 @@
+[client]
+user            = {{ serverbackup_mysql_user | quote }}
+password        = {{ serverbackup_mysql_password | quote }}
+{% if serverbackup_mysql_host | length > 0 %}
+host            = {{ serverbackup_mysql_host | quote }}
+{% endif %}
+{% if serverbackup_mysql_socket | length > 0 %}
+socket          = {{ serverbackup_mysql_socket | quote }}
+{% endif %}
+{% if serverbackup_mysql_port | string | length > 0 %}
+port            = {{ serverbackup_mysql_port }}
+{% endif %}

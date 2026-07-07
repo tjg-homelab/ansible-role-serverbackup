@@ -1,0 +1,22 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    serverbackup_mysql_backups_enabled: true
+    serverbackup_mysql_manage_defaults_file: false
+    serverbackup_website_timer_on_calendar: "*-*-* 02:00:00"
+    serverbackup_mysql_timer_on_calendar: "*-*-* 03:00:00"
+    serverbackup_host_identifier: molecule-host
+  pre_tasks:
+    - name: Read the pretend NAS public key
+      ansible.builtin.slurp:
+        src: /root/nas-pull-key.pub
+      register: molecule_nas_pubkey
+
+    - name: Register NAS key as the pull key
+      ansible.builtin.set_fact:
+        serverbackup_pull_public_keys:
+          - "{{ molecule_nas_pubkey.content | b64decode | trim }}"
+  roles:
+    - role: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | basename }}"

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+backup_kind="${1:?backup kind is required}"
+log_file="{{ serverbackup_log_dir }}/transfer.log"
+
+mkdir -p "{{ serverbackup_log_dir }}"
+touch "$log_file"
+exec > >(tee -a "$log_file") 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
+local_dir=""
+remote_subdir=""
+
+case "$backup_kind" in
+  websites)
+    local_dir="{{ serverbackup_website_output_dir }}"
+    remote_subdir="{{ serverbackup_push_destination_website_subdir }}"
+    ;;
+  mysql)
+    local_dir="{{ serverbackup_mysql_output_dir }}"
+    remote_subdir="{{ serverbackup_push_destination_mysql_subdir }}"
+    ;;
+  *)
+    log "Unsupported backup kind: $backup_kind"
+    exit 1
+    ;;
+esac
+
+if [[ ! -d "$local_dir" ]]; then
+  log "Local directory does not exist: $local_dir"
+  exit 1
+fi
+
+ssh_config="{{ serverbackup_push_ssh_config_path }}"
+destination_alias="{{ serverbackup_push_host_alias }}"
+remote_dir="{{ serverbackup_push_destination_base_path }}/{{ serverbackup_host_identifier }}/$remote_subdir"
+ssh_command="ssh -F $ssh_config"
+
+log "Ensuring remote directory exists: $remote_dir"
+ssh -F "$ssh_config" "$destination_alias" "mkdir -p '$remote_dir'"
+
+case "{{ serverbackup_push_method }}" in
+  rsync)
+    log "Starting rsync transfer for $backup_kind backups"
+    rsync {{ serverbackup_push_rsync_options | join(' ') }}{% if serverbackup_push_rsync_chmod | length > 0 %} --chmod={{ serverbackup_push_rsync_chmod }}{% endif %} -e "$ssh_command" -- "$local_dir"/ "$destination_alias:$remote_dir/"
+    ;;
+  scp)
+    log "Starting scp transfer for $backup_kind backups"
+    scp -F "$ssh_config" -pr "$local_dir"/. "$destination_alias:$remote_dir/"
+    ;;
+  *)
+    log "Unsupported transfer method: {{ serverbackup_push_method }}"
+    exit 1
+    ;;
+esac
+
+log "Transfer complete for $backup_kind backups"

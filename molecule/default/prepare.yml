@@ -1,0 +1,51 @@
+---
+# Fixtures for the loopback pull test: the container acts as both the backup
+# host and the "NAS". sshd + a runtime-generated keypair let verify rsync
+# from itself through the restricted pull user. Keys are generated at
+# runtime, never committed (gitleaks).
+- name: Prepare
+  hosts: all
+  tasks:
+    - name: Install openssh server and client
+      ansible.builtin.apt:
+        name:
+          - openssh-server
+          - openssh-client
+        state: present
+        update_cache: true
+
+    - name: Start ssh service
+      ansible.builtin.service:
+        name: ssh
+        state: started
+        enabled: true
+
+    - name: Generate throwaway keypair for the pretend NAS
+      ansible.builtin.command: >-
+        ssh-keygen -t ed25519 -N '' -C molecule-nas-pull
+        -f /root/nas-pull-key
+      args:
+        creates: /root/nas-pull-key
+
+    - name: Create website source fixtures
+      ansible.builtin.file:
+        path: "/var/www/html/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - site-one
+        - site-two
+
+    - name: Populate website fixtures
+      ansible.builtin.copy:
+        content: "molecule website fixture\n"
+        dest: "/var/www/html/{{ item }}/index.html"
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+      loop:
+        - site-one
+        - site-two

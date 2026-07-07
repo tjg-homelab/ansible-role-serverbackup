@@ -1,0 +1,12 @@
+[Unit]
+Description=MySQL backup job
+Wants=network-online.target
+After=network-online.target local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart={{ serverbackup_script_dir }}/server-backup-mysql.sh
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

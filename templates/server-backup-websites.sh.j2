@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 027
+
+source_root="{{ serverbackup_website_source_root }}"
+output_dir="{{ serverbackup_website_output_dir }}"
+log_file="{{ serverbackup_log_dir }}/website-backup.log"
+retention_script="{{ serverbackup_script_dir }}/server-backup-retention.sh"
+transfer_script="{{ serverbackup_script_dir }}/server-backup-transfer.sh"
+backup_date="$(date '+%F')"
+retention_enabled="{{ serverbackup_cleanup_enabled | bool }}"
+transfer_enabled="{{ serverbackup_push_enabled | bool }}"
+retain_count="{{ serverbackup_retention_count }}"
+
+mkdir -p "$output_dir" "{{ serverbackup_log_dir }}"
+touch "$log_file"
+exec > >(tee -a "$log_file") 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
+if [[ ! -d "$source_root" ]]; then
+  log "Website source root does not exist: $source_root"
+  exit 1
+fi
+
+mapfile -d '' -t site_directories < <(
+  find "$source_root" -mindepth 1 -maxdepth 1 -type d -print0 | LC_ALL=C sort -z
+)
+
+if (( {% raw %}${#site_directories[@]}{% endraw %} == 0 )); then
+  log "No website directories found under $source_root"
+  exit 0
+fi
+
+for site_path in "${site_directories[@]}"; do
+  site_name="$(basename "$site_path")"
+  archive_path="${output_dir}/${site_name}_${backup_date}.tar.gz"
+
+  log "Creating website archive for $site_name"
+  tar -C "$source_root" -czf "$archive_path" "$site_name"
+
+  if [[ "$retention_enabled" == "True" ]]; then
+    "$retention_script" "$output_dir" "$site_name" "tar.gz" "$retain_count"
+  fi
+done
+
+if [[ "$transfer_enabled" == "True" ]]; then
+  "$transfer_script" websites
+fi
+
+log "Website backup run complete"

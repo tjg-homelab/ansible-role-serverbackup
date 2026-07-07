@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly MySQL backup schedule
+
+[Timer]
+OnCalendar={{ serverbackup_mysql_timer_on_calendar }}
+Persistent=true
+RandomizedDelaySec={{ serverbackup_mysql_timer_randomized_delay_sec }}
+Unit={{ serverbackup_mysql_service_name }}.service
+
+[Install]
+WantedBy=timers.target
