@@ -1,0 +1,11 @@
+[Unit]
+Description=Path backup schedule
+
+[Timer]
+OnCalendar={{ serverbackup_path_timer_on_calendar }}
+Persistent=true
+RandomizedDelaySec={{ serverbackup_path_timer_randomized_delay_sec }}
+Unit={{ serverbackup_path_service_name }}.service
+
+[Install]
+WantedBy=timers.target

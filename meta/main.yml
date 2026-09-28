@@ -3,10 +3,10 @@ galaxy_info:
   role_name: serverbackup
   author: rnissen
   description: >-
-    Scheduled website and MySQL backups with retention, exposed for pull by
-    the backup destination via a read-only rrsync SSH user — the destination
-    fetches archives; the host holds no credentials to it. Optional legacy
-    push-over-SSH mode
+    Scheduled website, MySQL and arbitrary-path backups with retention,
+    exposed for pull by the backup destination via a read-only rrsync SSH
+    user — the destination fetches archives; the host holds no credentials
+    to it. Optional legacy push-over-SSH mode
   license: MIT
   min_ansible_version: "2.14"
   platforms:

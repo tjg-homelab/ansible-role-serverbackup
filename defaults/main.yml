@@ -44,6 +44,20 @@ serverbackup_mysql_dump_options:
   - --events
   - --databases
 
+# ── Path backups (opt-in — arbitrary directory trees) ──────────────────────
+# For data that is neither a docroot nor MySQL, e.g. an application's home
+# directory. Each entry becomes <name>_<date>.tar.gz under the output dir:
+#   - name: confluence-home         # archive prefix: [A-Za-z0-9.-] only — no
+#     path: /srv/confluence/home    #   "_", which retention uses as the date
+#     excludes:                     #   separator. Optional tar --exclude
+#       - temp                      #   patterns (unanchored, match any level)
+# All entries share one timer. A live tree that changes mid-read is archived
+# with a warning, not failed — stop the service first if you need a
+# consistent snapshot.
+serverbackup_path_backups_enabled: false
+serverbackup_path_backups: []
+serverbackup_path_output_dir: "{{ serverbackup_base_dir }}/paths"
+
 # ── Retention ───────────────────────────────────────────────────────────────
 serverbackup_retention_count: 3
 serverbackup_cleanup_enabled: true
@@ -73,6 +87,7 @@ serverbackup_push_destination_port: 22
 serverbackup_push_destination_base_path: ""
 serverbackup_push_destination_website_subdir: websites
 serverbackup_push_destination_mysql_subdir: mysql
+serverbackup_push_destination_path_subdir: paths
 serverbackup_push_use_proxy_jump: false
 serverbackup_push_proxy_jump_user: ""
 serverbackup_push_proxy_jump_host: ""
@@ -95,3 +110,6 @@ serverbackup_website_timer_randomized_delay_sec: 1h
 serverbackup_mysql_service_name: server-backup-mysql
 serverbackup_mysql_timer_on_calendar: daily
 serverbackup_mysql_timer_randomized_delay_sec: 30m
+serverbackup_path_service_name: server-backup-paths
+serverbackup_path_timer_on_calendar: daily
+serverbackup_path_timer_randomized_delay_sec: 30m
