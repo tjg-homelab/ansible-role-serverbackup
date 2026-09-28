@@ -24,6 +24,10 @@ case "$backup_kind" in
     local_dir="{{ serverbackup_mysql_output_dir }}"
     remote_subdir="{{ serverbackup_push_destination_mysql_subdir }}"
     ;;
+  paths)
+    local_dir="{{ serverbackup_path_output_dir }}"
+    remote_subdir="{{ serverbackup_push_destination_path_subdir }}"
+    ;;
   *)
     log "Unsupported backup kind: $backup_kind"
     exit 1

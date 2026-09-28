@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 027
+
+output_dir="{{ serverbackup_path_output_dir }}"
+log_file="{{ serverbackup_log_dir }}/path-backup.log"
+retention_script="{{ serverbackup_script_dir }}/server-backup-retention.sh"
+transfer_script="{{ serverbackup_script_dir }}/server-backup-transfer.sh"
+backup_date="$(date '+%F')"
+retention_enabled="{{ serverbackup_cleanup_enabled | bool }}"
+transfer_enabled="{{ serverbackup_push_enabled | bool }}"
+retain_count="{{ serverbackup_retention_count }}"
+failed_count=0
+
+mkdir -p "$output_dir" "{{ serverbackup_log_dir }}"
+touch "$log_file"
+exec > >(tee -a "$log_file") 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
+}
+
+# backup_path NAME SOURCE [EXCLUDE...]
+# A failed entry is logged and counted, not fatal — the remaining entries
+# still run, and the script exits non-zero at the end.
+backup_path() {
+  local name="$1" source_path="${2%/}"
+  shift 2
+  local archive_path="${output_dir}/${name}_${backup_date}.tar.gz"
+  local tar_args=() exclude_pattern tar_rc=0
+
+  if [[ ! -d "$source_path" ]]; then
+    log "Path backup source does not exist: $source_path ($name)"
+    failed_count=$(( failed_count + 1 ))
+    return 0
+  fi
+
+  for exclude_pattern in "$@"; do
+    tar_args+=("--exclude=$exclude_pattern")
+  done
+
+  log "Creating path archive for $name from $source_path"
+  tar -C "$(dirname "$source_path")" "${tar_args[@]}" -czf "$archive_path" \
+    "$(basename "$source_path")" || tar_rc=$?
+
+  # GNU tar exits 1 when a file changed while being read — expected on a
+  # live tree. The archive is still complete; keep it and say so. Quiescing
+  # the source for a consistent snapshot is the consumer's job.
+  if (( tar_rc == 1 )); then
+    log "WARNING: $name changed while being archived; archive kept"
+  elif (( tar_rc != 0 )); then
+    log "ERROR: tar exited $tar_rc for $name; removing partial archive"
+    rm -f -- "$archive_path"
+    failed_count=$(( failed_count + 1 ))
+    return 0
+  fi
+
+  if [[ "$retention_enabled" == "True" ]]; then
+    "$retention_script" "$output_dir" "$name" "tar.gz" "$retain_count"
+  fi
+}
+
+{% for entry in serverbackup_path_backups %}
+backup_path {{ entry.name | quote }} {{ entry.path | quote }}{% for exclude_pattern in entry.excludes | default([]) %} {{ exclude_pattern | quote }}{% endfor %}
+
+{% endfor %}
+if [[ "$transfer_enabled" == "True" ]]; then
+  "$transfer_script" paths
+fi
+
+if (( failed_count > 0 )); then
+  log "Path backup run finished with $failed_count failed entries"
+  exit 1
+fi
+
+log "Path backup run complete"

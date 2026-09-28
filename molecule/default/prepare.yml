@@ -49,3 +49,52 @@
       loop:
         - site-one
         - site-two
+
+    # AN-96: an archive written before pull was enabled — root-only tree,
+    # 0640 root:root file. The converge must make it readable by the pull
+    # user.
+    - name: Create a pre-pull backup tree
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - /var/backups/server-backup
+        - /var/backups/server-backup/mysql
+
+    - name: Plant an archive that predates pull access
+      ansible.builtin.copy:
+        content: "pre-pull archive fixture\n"
+        dest: /var/backups/server-backup/mysql/prepull_2001-01-01.sql.gz
+        owner: root
+        group: root
+        mode: "0640"
+        force: false
+
+    # AN-94: an arbitrary tree for the path-backup shape, with a
+    # subdirectory the entry excludes.
+    - name: Create path backup source fixtures
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /srv/app-data
+        - /srv/app-data/attachments
+        - /srv/app-data/temp
+
+    - name: Populate path backup fixtures
+      ansible.builtin.copy:
+        content: "molecule path fixture\n"
+        dest: "{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+      loop:
+        - /srv/app-data/attachments/doc.txt
+        - /srv/app-data/temp/scratch.txt

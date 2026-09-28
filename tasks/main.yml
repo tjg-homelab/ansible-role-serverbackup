@@ -35,6 +35,41 @@
     - serverbackup_mysql_backups_enabled | bool
     - serverbackup_mysql_manage_defaults_file | bool
 
+- name: Validate path backups are configured when enabled
+  ansible.builtin.assert:
+    that:
+      - serverbackup_path_backups | length > 0
+    fail_msg: >-
+      Path backups are enabled but serverbackup_path_backups is empty.
+  when: serverbackup_path_backups_enabled | bool
+
+# Names become the retention glob prefix (<name>_*.tar.gz), so "_" is
+# refused: an entry "app" would otherwise prune "app_data" archives.
+- name: Validate path backup entries
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name is match('^[A-Za-z0-9.-]+$')
+      - item.path is defined
+      - item.path is match('^/[^/]')
+      - item.excludes | default([]) is sequence
+      - item.excludes | default([]) is not string
+    fail_msg: >-
+      Each serverbackup_path_backups entry needs a name ([A-Za-z0-9.-] only)
+      and an absolute path other than /; excludes, if set, must be a list.
+  loop: "{{ serverbackup_path_backups }}"
+  loop_control:
+    label: "{{ item.name | default('(unnamed)') }}"
+  when: serverbackup_path_backups_enabled | bool
+
+- name: Validate path backup names are unique
+  ansible.builtin.assert:
+    that:
+      - (serverbackup_path_backups | map(attribute='name') | unique | length)
+        == (serverbackup_path_backups | length)
+    fail_msg: serverbackup_path_backups names must be unique.
+  when: serverbackup_path_backups_enabled | bool
+
 - name: Validate push transfer settings
   ansible.builtin.assert:
     that:
@@ -98,11 +133,50 @@
     owner: root
     group: "{{ serverbackup_pull_user if serverbackup_pull_enabled | bool else 'root' }}"
     mode: "{{ '2750' if serverbackup_pull_enabled | bool else '0700' }}"
-  loop:
-    - "{{ serverbackup_base_dir }}"
-    - "{{ serverbackup_website_output_dir }}"
-    - "{{ serverbackup_mysql_output_dir }}"
-    - "{{ serverbackup_log_dir }}"
+  loop: >-
+    {{ [serverbackup_base_dir, serverbackup_website_output_dir,
+        serverbackup_mysql_output_dir, serverbackup_log_dir]
+       + ([serverbackup_path_output_dir]
+          if serverbackup_path_backups_enabled | bool else []) }}
+
+# setgid only covers files created after the group change. Archives written
+# before pull was enabled (the recommended rollout order) stay root:root and
+# the pull transfers nothing but "Permission denied". Group only — 0640
+# already grants group read.
+- name: Group-own existing backup content for the pull user
+  become: true
+  ansible.builtin.file:
+    path: "{{ serverbackup_base_dir }}"
+    state: directory
+    recurse: true
+    group: "{{ serverbackup_pull_user }}"
+  when: serverbackup_pull_enabled | bool
+
+# Fail the converge rather than leave a pull that authenticates and then
+# cannot open a single file. runuser, not become_user: becoming an
+# unprivileged user from a non-root login needs setfacl on the target.
+- name: Check the pull user can read the whole backup tree
+  become: true
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ serverbackup_pull_user }}"
+      - --
+      - find
+      - "{{ serverbackup_base_dir }}"
+      - "!"
+      - -readable
+      - -print
+    # find must be able to return to its starting directory; the connecting
+    # user's home (e.g. /home/automax) is unreadable to the pull user.
+    chdir: /
+  register: serverbackup_pull_readable_check
+  changed_when: false
+  failed_when: >-
+    serverbackup_pull_readable_check.rc != 0
+    or serverbackup_pull_readable_check.stdout | length > 0
+  when: serverbackup_pull_enabled | bool
 
 - name: Ensure config directory exists
   become: true
@@ -213,6 +287,7 @@
     - server-backup-transfer.sh
     - server-backup-websites.sh
     - server-backup-mysql.sh
+    - server-backup-paths.sh
 
 - name: Deploy server backup systemd units
   become: true
@@ -231,6 +306,10 @@
       dest: "{{ serverbackup_mysql_service_name }}.service"
     - src: server-backup-mysql.timer.j2
       dest: "{{ serverbackup_mysql_service_name }}.timer"
+    - src: server-backup-paths.service.j2
+      dest: "{{ serverbackup_path_service_name }}.service"
+    - src: server-backup-paths.timer.j2
+      dest: "{{ serverbackup_path_service_name }}.timer"
   notify: Reload systemd
 
 - name: Flush handlers
@@ -247,5 +326,7 @@
       enabled: "{{ serverbackup_website_backups_enabled | bool }}"
     - name: "{{ serverbackup_mysql_service_name }}"
       enabled: "{{ serverbackup_mysql_backups_enabled | bool }}"
+    - name: "{{ serverbackup_path_service_name }}"
+      enabled: "{{ serverbackup_path_backups_enabled | bool }}"
   loop_control:
     label: "{{ item.name }}"

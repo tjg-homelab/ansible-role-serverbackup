@@ -13,15 +13,19 @@
         - /var/backups/server-backup/websites
         - /var/backups/server-backup/mysql
         - /var/backups/server-backup/logs
+        - /var/backups/server-backup/paths
         - /etc/server-backup
         - /usr/local/libexec/server-backup/server-backup-websites.sh
         - /usr/local/libexec/server-backup/server-backup-mysql.sh
         - /usr/local/libexec/server-backup/server-backup-transfer.sh
         - /usr/local/libexec/server-backup/server-backup-retention.sh
+        - /usr/local/libexec/server-backup/server-backup-paths.sh
         - /etc/systemd/system/server-backup-websites.service
         - /etc/systemd/system/server-backup-websites.timer
         - /etc/systemd/system/server-backup-mysql.service
         - /etc/systemd/system/server-backup-mysql.timer
+        - /etc/systemd/system/server-backup-paths.service
+        - /etc/systemd/system/server-backup-paths.timer
       register: serverbackup_verify_stats
 
     - name: Assert expected backup paths exist
@@ -38,6 +42,8 @@
       loop:
         - /var/backups/server-backup
         - /var/backups/server-backup/websites
+        - /var/backups/server-backup/mysql
+        - /var/backups/server-backup/paths
       register: serverbackup_verify_dir_stats
 
     - name: Assert backup tree is setgid and group-owned by the pull user
@@ -55,6 +61,7 @@
       loop:
         - server-backup-websites
         - server-backup-mysql
+        - server-backup-paths
       register: serverbackup_verify_timers
       failed_when: not serverbackup_verify_timers.stat.islnk | default(false)
 
@@ -79,6 +86,7 @@
         - server-backup-mysql.sh
         - server-backup-transfer.sh
         - server-backup-retention.sh
+        - server-backup-paths.sh
       changed_when: false
 
     - name: Run the website backup script
@@ -176,3 +184,127 @@
             | map(attribute='path') | select('search', '2001-01-01') | length == 0
           - serverbackup_verify_retained.files
             | map(attribute='path') | select('search', '2001-01-02') | length == 0
+
+    # ── AN-96: archives that predate pull access ──────────────────────────
+    - name: Stat the archive planted before pull was enabled
+      ansible.builtin.stat:
+        path: /var/backups/server-backup/mysql/prepull_2001-01-01.sql.gz
+      register: serverbackup_verify_prepull
+
+    - name: Assert the pre-pull archive was re-grouped, mode untouched
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_prepull.stat.pw_name == 'root'
+          - serverbackup_verify_prepull.stat.gr_name == 'backup-pull'
+          - serverbackup_verify_prepull.stat.mode == '0640'
+
+    - name: Pull the mysql tree over loopback SSH as the pretend NAS
+      ansible.builtin.command:
+        argv:
+          - rsync
+          - -rlt
+          - -e
+          - >-
+            ssh -i /root/nas-pull-key -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile=/root/nas-known-hosts
+          - backup-pull@127.0.0.1:mysql/
+          - /tmp/pulled-mysql/
+      changed_when: true
+
+    - name: Stat the pulled pre-pull archive
+      ansible.builtin.stat:
+        path: /tmp/pulled-mysql/prepull_2001-01-01.sql.gz
+      register: serverbackup_verify_prepull_pulled
+
+    - name: Assert the pre-pull archive came across the pull
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_prepull_pulled.stat.exists
+
+    # ── AN-94: path backups ───────────────────────────────────────────────
+    - name: Run the path backup script
+      ansible.builtin.command: /usr/local/libexec/server-backup/server-backup-paths.sh
+      changed_when: true
+
+    - name: Find produced path archives
+      ansible.builtin.find:
+        paths: /var/backups/server-backup/paths
+        patterns: "app-data_*.tar.gz"
+      register: serverbackup_verify_path_archives
+
+    - name: Assert one path archive, group-readable for the pull user
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_path_archives.files | length == 1
+          - serverbackup_verify_path_archives.files[0].mode == '0640'
+          - serverbackup_verify_path_archives.files[0].gr_name == 'backup-pull'
+
+    - name: List the path archive contents
+      ansible.builtin.command:
+        argv:
+          - tar
+          - -tzf
+          - "{{ serverbackup_verify_path_archives.files[0].path }}"
+      register: serverbackup_verify_path_listing
+      changed_when: false
+
+    - name: Assert the archive holds the tree, minus the excluded subdir
+      ansible.builtin.assert:
+        that:
+          - "'app-data/attachments/doc.txt' in members"
+          - members | select('search', '(^|/)temp(/|$)') | length == 0
+      vars:
+        members: "{{ serverbackup_verify_path_listing.stdout_lines }}"
+
+    - name: Pull the paths tree over loopback SSH as the pretend NAS
+      ansible.builtin.command:
+        argv:
+          - rsync
+          - -rlt
+          - -e
+          - >-
+            ssh -i /root/nas-pull-key -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile=/root/nas-known-hosts
+          - backup-pull@127.0.0.1:paths/
+          - /tmp/pulled-paths/
+      changed_when: true
+
+    - name: Find pulled path archives
+      ansible.builtin.find:
+        paths: /tmp/pulled-paths
+        patterns: "app-data_*.tar.gz"
+      register: serverbackup_verify_pulled_paths
+
+    - name: Assert the pull retrieved the path archive
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_pulled_paths.files | length == 1
+
+    - name: Seed extra dated path archives for the retention check
+      ansible.builtin.copy:
+        content: "expired fixture\n"
+        dest: "/var/backups/server-backup/paths/app-data_{{ item }}.tar.gz"
+        owner: root
+        group: backup-pull
+        mode: "0640"
+      loop:
+        - "2001-01-01"
+        - "2001-01-02"
+        - "2001-01-03"
+
+    - name: Re-run the path backup script so retention prunes
+      ansible.builtin.command: /usr/local/libexec/server-backup/server-backup-paths.sh
+      changed_when: true
+
+    - name: Find path archives after retention
+      ansible.builtin.find:
+        paths: /var/backups/server-backup/paths
+        patterns: "app-data_*.tar.gz"
+      register: serverbackup_verify_path_retained
+
+    - name: Assert retention applies to path archives
+      ansible.builtin.assert:
+        that:
+          - serverbackup_verify_path_retained.files | length == 3
+          - serverbackup_verify_path_retained.files
+            | map(attribute='path') | select('search', '2001-01-01') | length == 0

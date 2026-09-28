@@ -15,7 +15,9 @@ What it manages:
   on a systemd timer (weekly by default)
 - **MySQL backups** (opt-in) — one gzipped dump per database via
   `mysqldump`, on its own timer (daily by default)
-- **Retention** — keeps the newest N archives per site/database
+- **Path backups** (opt-in) — one `tar.gz` per configured directory tree
+  (e.g. an application's home directory), on a shared timer (daily by default)
+- **Retention** — keeps the newest N archives per site/database/path
 - **Pull access** — `backup-pull` user + `rrsync -ro` forced command
 - **Push transfer** (optional, legacy) — rsync/scp the archives to a remote
   after each run, with optional ProxyJump
@@ -38,13 +40,41 @@ Highlights — see `defaults/main.yml` for the full annotated list.
 | `serverbackup_website_source_root` | `/var/www/html` | One archive per direct subdirectory |
 | `serverbackup_mysql_backups_enabled` | `false` | Opt-in — dump each database (exclusions configurable) |
 | `serverbackup_mysql_user` / `_password` | `root` / `""` | Written to a managed `.my.cnf` (vault the password) |
-| `serverbackup_retention_count` | `3` | Newest archives kept per site/database |
+| `serverbackup_path_backups_enabled` | `false` | Opt-in — archive each entry in `serverbackup_path_backups` |
+| `serverbackup_path_backups` | `[]` | List of `{name, path, excludes}` — see below |
+| `serverbackup_retention_count` | `3` | Newest archives kept per site/database/path |
 | `serverbackup_pull_enabled` | `true` | Create the read-only pull user |
 | `serverbackup_pull_user` | `backup-pull` | Account the destination connects as |
 | `serverbackup_pull_public_keys` | `[]` | **Required when pull is enabled** — the destination's public key(s) |
 | `serverbackup_push_enabled` | `false` | Legacy push-to-remote after each run |
 | `serverbackup_website_timer_on_calendar` | `weekly` | systemd `OnCalendar` for websites |
 | `serverbackup_mysql_timer_on_calendar` | `daily` | systemd `OnCalendar` for MySQL |
+| `serverbackup_path_timer_on_calendar` | `daily` | systemd `OnCalendar` for path backups |
+
+### Path backups
+
+For data that is neither a docroot nor MySQL. Each entry produces
+`<name>_<date>.tar.gz` under `paths/` in the backup tree:
+
+```yaml
+serverbackup_path_backups_enabled: true
+serverbackup_path_backups:
+  - name: confluence-home
+    path: /srv/confluence/home
+    excludes:          # optional tar --exclude patterns, matched at any depth
+      - temp
+      - analytics-logs
+```
+
+- `name` is the archive prefix and may only contain `[A-Za-z0-9.-]`. `_`
+  is refused because retention matches `<name>_*`, so an entry `app` would
+  otherwise prune `app_data` archives.
+- All entries run from one service on one timer. A missing source is logged
+  and the run continues with the remaining entries, then exits non-zero.
+- Live trees are archived as-is. If a file changes while tar reads it, the
+  archive is kept and a warning is logged (tar exit 1). Any other tar error
+  discards that archive. For a consistent snapshot, stop the application
+  first.
 
 ### How pull access works
 
@@ -65,6 +95,7 @@ On the destination, schedule something like:
 ```
 rsync -rlt backup-pull@host.example.com:websites/ /pool/backups/host/websites/
 rsync -rlt backup-pull@host.example.com:mysql/    /pool/backups/host/mysql/
+rsync -rlt backup-pull@host.example.com:paths/    /pool/backups/host/paths/
 ```
 
 (Paths are relative to the rrsync root.)
@@ -76,6 +107,12 @@ source, where it confines the pull account to the backup tree and nothing
 else, but wrong on the destination, where it makes the archives unreadable to
 the humans who need to verify them. Let the destination filesystem's own ACL
 or ownership policy govern modes there instead.
+
+Enabling pull on a host that already has local backups is safe. setgid only
+covers files created after the group change, so the role also re-groups
+existing content to the pull user. It then fails the converge if the pull
+user cannot read the whole tree, rather than leaving a pull that
+authenticates and then cannot open a single file.
 
 ### Push mode (legacy)
 
