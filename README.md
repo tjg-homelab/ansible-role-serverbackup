@@ -63,11 +63,19 @@ else on the host.
 On the destination, schedule something like:
 
 ```
-rsync -a backup-pull@host.example.com:websites/ /pool/backups/host/websites/
-rsync -a backup-pull@host.example.com:mysql/    /pool/backups/host/mysql/
+rsync -rlt backup-pull@host.example.com:websites/ /pool/backups/host/websites/
+rsync -rlt backup-pull@host.example.com:mysql/    /pool/backups/host/mysql/
 ```
 
 (Paths are relative to the rrsync root.)
+
+Use `-rlt` (recurse, preserve symlinks, preserve timestamps), not `-a`. `-a`
+implies `-p`, which faithfully reproduces the source-side hardening above
+(setgid `2750` dirs, `0640` archives) onto the destination — correct on the
+source, where it confines the pull account to the backup tree and nothing
+else, but wrong on the destination, where it makes the archives unreadable to
+the humans who need to verify them. Let the destination filesystem's own ACL
+or ownership policy govern modes there instead.
 
 ### Push mode (legacy)
 
